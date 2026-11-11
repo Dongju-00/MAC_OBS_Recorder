@@ -9,6 +9,9 @@ venv/
 .vscode/
 .DS_Store
 
+# Local working documents
+/docs/
+
 # Local configuration and recordings
 config.json
 .site-profiles.json
