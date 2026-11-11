@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editor / macOS
+.idea/
+.vscode/
+.DS_Store
+
+# Local configuration and recordings
+.env
+.env.*
+!.env.example
+*.log
+*.mkv
+*.mp4
+*.mov
+*.webm
+recordings/
