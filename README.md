@@ -1,181 +1,360 @@
-# macOS 동영상 녹화 도우미
+# macOS OBS Recorder
 
-Mac에서 OBS로 브라우저, 동영상 플레이어, 화면에 재생되는 영상을 녹화하는 도구입니다. OBS의 화면·오디오 캡처를 설정하고, Python 스크립트로 연결 상태와 시험 녹화 파일을 확인할 수 있습니다.
+[English](README.md) · [한국어](README.ko.md) · [简体中文](README.zh-CN.md)
 
-일반 동영상은 OBS의 **녹화 시작 / 녹화 중단** 버튼으로 녹화합니다. 스크립트의 `--check-obs`와 `--test-recording`은 사이트나 재생 앱에 관계없이 현재 OBS 장면을 대상으로 동작합니다. `--test-recording`은 **10초 시험 녹화 전용**입니다.
+![Platform: macOS](https://img.shields.io/badge/platform-macOS-lightgrey)
+![Python: Standard Library](https://img.shields.io/badge/Python-standard%20library-blue)
+![OBS: WebSocket 5](https://img.shields.io/badge/OBS-WebSocket%205-302E31)
 
-`--run`을 사용하면 현재 Chrome 탭의 영상을 처음부터 녹화하고, 종료·파일 저장을 확인한 뒤 다음 영상 버튼을 눌러 연속 녹화합니다. 사이트 주소 제한은 없으며 다음 버튼과 HTML `video`를 기준으로 동작합니다.
+A general-purpose OBS helper for recording your own content, content you have permission to record, and browser test sessions on ordinary non-DRM webpages. Run a site test once to discover its next-video control, verify recording and navigation, and save the settings. Then record from the current Chrome tab, one file at a time.
 
-## 준비물과 설치 링크
+[Getting Started](#installation) · [Recording Guides](#user-guides) · [Customization](#customization) · [FAQ](#faq)
 
-- Mac과 OBS Studio: [OBS 공식 설치·다운로드 페이지](https://obsproject.com/download)
-- 스크립트 실행용 Python 3: `python3 --version`으로 설치 확인
-- 시스템 소리 입력용 BlackHole 2ch: [BlackHole 공식 설치·다운로드 페이지](https://existential.audio/blackhole/)
-- Chrome 자동화를 사용할 경우 Google Chrome
+## Table of Contents
 
-OBS 제어에는 OBS 28 이상에 포함된 WebSocket 5 서버가 필요합니다. Python 코드는 표준 라이브러리만 사용하므로 `pip install`이나 API 키가 필요 없습니다. Node.js는 브라우저 테스트를 실행할 때만 필요합니다.
+- [Intended Use and Limitations](#intended-use-and-limitations)
+- [Features](#features)
+- [Installation](#installation)
+- [OBS Setup](#obs-setup)
+- [User Guides](#user-guides)
+- [Customization](#customization)
+- [FAQ](#faq)
+- [Developer Guide](#developer-guide)
+- [Resources](#resources)
 
-## 1. 화면 캡처 설정
+## Intended Use and Limitations
 
-1. OBS를 설치하고 실행한 뒤 녹화용 장면을 만듭니다.
-2. **소스 → + → macOS 화면 캡처**를 추가합니다.
-3. 특정 앱만 담으려면 **윈도우 캡처**로 재생 창을 선택합니다. 화면 전체를 담으려면 해당 디스플레이를 선택합니다.
-4. macOS가 요청하는 화면 녹화 권한을 허용합니다. **시스템 설정 → 개인정보 보호 및 보안**에서 OBS 권한을 확인하고, 변경 후 필요하면 OBS를 다시 실행합니다.
-5. OBS 미리보기에서 영상이 잘리지 않고 원하는 크기로 보이는지 확인합니다.
+Use this tool only for content you own or have permission to record, such as your own videos, demonstrations, and browser automation tests on ordinary non-DRM webpages.
 
-윈도우 캡처 중에는 대상 창을 최소화하거나 닫지 마세요. 디스플레이 캡처에는 그 화면에 표시되는 다른 창과 알림도 함께 담깁니다.
+- **No DRM circumvention:** This project does not extract decryption keys, modify Widevine or other DRM settings, inject protection-disabling flags, or disable browser/OS capture protections.
+- **Capture restrictions remain in effect:** Protected content may be blocked, omitted, or displayed as a black screen by the browser, operating system, or capture path. This tool does not detect all DRM or guarantee the capture behavior of any protected content. It provides no workaround for these restrictions.
+- **Respect rights and service terms:** Permission to watch content does not necessarily grant permission to record or redistribute it. Do not use this tool to bypass protections or make unauthorized copies. Follow applicable copyright law and the relevant service's terms.
 
-## 2. 시스템 소리 설정
+This notice is general project documentation, not legal advice or a guarantee that any particular use is lawful. Consult a qualified legal professional for advice about your situation.
 
-스크립트의 OBS 점검은 현재 장면에 **음소거되지 않은 BlackHole 2ch 입력 소스**가 있는지 확인합니다. 아래 설정은 이 점검 기준에 맞춘 방법입니다.
+## Features
 
-1. BlackHole 2ch를 설치하고 설치 안내에 따라 Mac을 재시작합니다.
-2. **오디오 MIDI 설정** 앱에서 왼쪽 아래 **+ → 다중 출력 장치 생성**을 선택합니다.
-3. 사용 중인 스피커·이어폰과 **BlackHole 2ch**를 체크합니다. 주 장치 외 장치의 드리프트 보정을 설정합니다.
-4. **시스템 설정 → 사운드 → 출력**을 방금 만든 다중 출력 장치로 바꿉니다.
-5. OBS에서 **소스 → + → macOS 오디오 입력 캡처**를 추가하고 장치를 **BlackHole 2ch**로 선택합니다. 음소거는 해제합니다.
-6. 같은 소리가 중복 입력되지 않도록 OBS **설정 → 오디오**의 데스크톱 오디오와 Mic/Aux는 사용 안 함으로 둡니다. 화면 캡처 소스에도 소리가 입력되면 오디오 믹서에서 해당 소스의 소리만 음소거하고 BlackHole 입력만 사용합니다.
-7. 동영상을 재생하고 OBS 오디오 믹서의 레벨이 움직이는지 확인합니다. 오디오 입력 권한을 요청하면 허용합니다.
+- Record permitted application windows or displays through your OBS scene, subject to capture restrictions.
+- Check the OBS connection, scene sources, BlackHole input, and recording directory.
+- Make a 10-second test recording without controlling Chrome.
+- Run `--test` to discover site navigation, record a short sample, and save a verified site profile.
+- Record a Chrome video from the beginning and optionally continue with a next-video button.
+- Verify that OBS stopped and created a nonempty file before advancing.
+- Save player selectors, recording limits, and timeouts in a reusable JSON configuration.
+- Run with the Python standard library. No Python packages or API keys required.
 
-다중 출력 장치에서는 Mac 볼륨 키가 동작하지 않을 수 있습니다. 재생 앱의 볼륨이나 출력 장치의 볼륨으로 조절하세요. 녹화를 마친 뒤에는 시스템 사운드 출력을 평소 사용하던 장치로 돌려놓을 수 있습니다.
+## Installation
 
-## 3. 저장 경로와 형식 설정
+| Requirement | Purpose |
+| --- | --- |
+| macOS | AppleScript control of Chrome and recording apps |
+| [OBS Studio](https://obsproject.com/download), version 28 or later | Recording and the built-in WebSocket 5 server |
+| Python 3 | Running the scripts |
+| [BlackHole 2ch](https://existential.audio/blackhole/) | Routing system audio into the OBS input checked by this tool |
+| [Google Chrome](https://www.google.com/chrome/) | Browser automation only |
 
-OBS **설정 → 출력 → 녹화**에서 저장 경로와 녹화 형식을 지정합니다. 파일 이름과 형식은 OBS 설정을 따릅니다.
-
-MKV로 녹화한 파일은 필요하면 OBS의 **파일 → 녹화 리먹스**에서 MP4로 변환할 수 있습니다. 녹화 전에 저장 공간을 확인하세요.
-
-## 4. OBS 제어 연결 설정
-
-일반 녹화를 OBS 버튼으로만 진행한다면 이 단계와 Python 명령은 생략할 수 있습니다. 스크립트로 연결 점검과 시험 녹화를 하려면 다음을 설정합니다.
-
-1. OBS **도구 → WebSocket 서버 설정**을 엽니다.
-2. **WebSocket 서버 활성화**를 켭니다.
-3. 포트는 기본값 **4455**를 사용합니다.
-4. 인증을 켜고 서버 비밀번호를 확인합니다.
-
-터미널에서 프로젝트 폴더로 이동한 뒤 실행합니다. 다른 경로에 내려받았다면 `cd` 경로를 바꾸세요.
+Download this repository or clone it, then open a terminal in the project folder:
 
 ```bash
-cd ~/Downloads/OBS_mac_recorder
+git clone https://github.com/Dongju-00/MAC_OBS_Recorder.git
+cd MAC_OBS_Recorder
+python3 --version
+python3 recorder.py --help
+```
+
+Node.js is needed only for the browser tests in the [Developer Guide](#developer-guide).
+
+## OBS Setup
+
+### 1. Capture video
+
+1. Open OBS and create a recording scene.
+2. Add **Sources → + → macOS Screen Capture**.
+3. Choose the player window for window capture, or a display for screen capture.
+4. Allow OBS screen recording access in **System Settings → Privacy & Security**. Restart OBS if requested.
+5. Check the preview and adjust the capture size.
+
+Keep a captured window open and unminimized. Display capture includes other windows and notifications on that display.
+
+### 2. Capture system audio
+
+The OBS checks require an enabled, unmuted **BlackHole 2ch** audio input added directly to the current scene. Nested scenes, groups, and global audio inputs are not searched by this check.
+
+1. Install BlackHole 2ch and restart your Mac when prompted.
+2. Open **Audio MIDI Setup → + → Create Multi-Output Device**.
+3. Select your speakers or headphones and **BlackHole 2ch**. Enable drift correction for devices other than the primary clock device. See BlackHole's [Multi-Output Device guide](https://github.com/ExistentialAudio/BlackHole/wiki/Multi-Output-Device).
+4. Select the new device in **System Settings → Sound → Output**.
+5. In OBS, add **Sources → + → macOS Audio Input Capture**, select **BlackHole 2ch**, and unmute it.
+6. Disable unused Desktop Audio and Mic/Aux inputs in **Settings → Audio**. If the screen capture source also captures audio, mute that audio to avoid duplicates.
+7. Play a video and confirm that the BlackHole meter moves in OBS. Allow audio input access if requested.
+
+### 3. Choose recording output
+
+Set the recording directory and format in **OBS → Settings → Output → Recording**. File names and formats follow your OBS settings.
+
+You can record to MKV and convert it to MP4 using **File → Remux Recordings**. Check available disk space before a long session.
+
+### 4. Enable WebSocket control
+
+1. Open **OBS → Tools → WebSocket Server Settings**.
+2. Enable the server and keep the default port, **4455**.
+3. Enable authentication and note the server password.
+4. Check the connection:
+
+```bash
 python3 recorder.py --check-obs
 ```
 
-인증이 켜져 있으면 비밀번호를 묻습니다. 입력한 글자는 화면에 표시되지 않습니다. 성공하면 현재 장면, 녹화 중 여부, 저장 폴더와 윈도우 캡처 대상(해당 시)을 출력합니다. Chrome 이외 앱의 캡처 경고가 나오면 의도한 대상인지 확인하세요.
-
-매번 입력하지 않으려면 zsh에서 현재 터미널 세션에만 비밀번호를 설정합니다.
+Enter the password when prompted; input is hidden. To reuse it in the current zsh session:
 
 ```zsh
-read -s 'OBS_WEBSOCKET_PASSWORD?OBS WebSocket 비밀번호: '
+read -s 'OBS_WEBSOCKET_PASSWORD?OBS WebSocket password: '
 export OBS_WEBSOCKET_PASSWORD
 ```
 
-서버 포트를 바꿨다면 각 명령에 `--obs-port 4456`처럼 실제 포트를 추가합니다. 연결 주소는 이 Mac의 `127.0.0.1`로 고정되어 있습니다. 비밀번호는 코드나 Git에 저장하지 마세요.
+The connection uses `127.0.0.1`. Keep the password out of source files and Git. If you change the server port, pass the matching `--obs-port` value.
 
-## 5. Chrome 동영상 자동 녹화
+## User Guides
 
-### Chrome 권한 설정
+### Test your recording setup
 
-1. Chrome **보기 → 개발자 → Apple 이벤트의 JavaScript 허용**을 켭니다.
-2. macOS **개인정보 보호 및 보안 → 손쉬운 사용 / 자동화**에서 실행에 사용하는 터미널이 Chrome과 System Events를 제어하도록 허용합니다.
-3. 녹화할 동영상 페이지에 로그인하고 대상 탭을 선택합니다.
-4. 사이트의 **자동 다음 재생은 끕니다.** 스크립트가 파일 저장을 확인하고 다음 버튼을 누릅니다.
-5. 플레이어를 한 번 직접 재생하고 일시정지해 로딩과 사용자 입력을 준비합니다.
+Start playback in any application, then run:
 
-### 현재 영상과 다음 버튼 점검
+```bash
+python3 recorder.py --test-recording
+```
+
+This records the current OBS scene for **10 seconds** and checks the saved file. Open the recording to confirm the picture and sound. Chrome is not controlled during this test.
+
+To record other applications manually, use OBS's **Start Recording / Stop Recording** buttons after setting up your scene.
+
+### Prepare Chrome automation
+
+1. Enable **Chrome → View → Developer → Allow JavaScript from Apple Events**.
+2. In **System Settings → Privacy & Security → Accessibility / Automation**, allow your terminal to control Chrome and System Events as requested.
+3. Open the video page, sign in if needed, and select the target tab.
+4. Turn off the site's automatic next-video playback. The script advances after saving.
+5. Play and pause the video once to load the player and allow playback.
+
+### Test a new site once
+
+Open a video that has another video after it, then run:
+
+```bash
+python3 recorder.py --test
+```
+
+The test:
+
+1. Finds the next-video control from its label or identifying attributes.
+2. Rewinds the current video and records up to 10 seconds with OBS.
+3. Checks playback progress, stops OBS, and verifies a nonempty saved file.
+4. Actually moves to the next video and checks that new media loads and can play.
+5. Pauses and rewinds that next video, then saves the successful site settings.
+
+**The test changes the current video.** After it succeeds, `--run` starts from the next video now selected. To include the original video in a full recording, reopen it before running.
+
+Open the sample file printed in the terminal to check its actual picture and sound. Automated checks cannot judge capture framing or audible sound. OBS must be configured before testing; `--test` does not support EaseUS.
+
+Profiles are stored in `.site-profiles.json` beside the scripts and loaded automatically for the same scheme, hostname, and port. You do not need to pass `--config` to reuse them. A test that fails does not replace the previous profile. Run `--test` again to update a site.
+
+YouTube uses a next control inside its video player when available; unrelated page and carousel arrows are excluded. If no enabled or disabled player next control is found, the test tries **Shift+N** and saves that method only after a successful media transition. Use a playlist when you want a defined sequence; outside a playlist, YouTube chooses the next suggested video. Other sites do not receive guessed shortcuts.
+
+If multiple equally strong buttons are found, the test stops and asks for an explicit selector:
+
+```bash
+python3 recorder.py --diagnose
+python3 recorder.py --test --video-next-selector '#your-next-button'
+```
+
+The selector is saved after a successful test, so you can omit it from later runs. If the player itself is ambiguous, also pass `--video-selector`.
+
+### Inspect without changing videos
 
 ```bash
 python3 recorder.py --check
 python3 recorder.py --diagnose
 ```
 
-대상 Chrome 창과 탭을 앞으로 가져온 뒤 상태를 출력합니다. 재생·녹화·버튼 클릭은 하지 않습니다. `--check`에서는 영상이 하나이고 길이를 읽을 수 있는지도 검사합니다. `--diagnose`는 영상이 없어도 버튼 후보를 출력합니다.
+Both commands bring the target tab forward without starting playback, recording, or clicking next. `--check` requires one loaded video with a finite duration. `--diagnose` lists button candidates even when no video is available.
 
-- `videoCount: 1`: 선택된 HTML 영상이 하나
-- `playerReady: true`, 양수 `duration`: 영상이 로드되었고 길이를 읽을 수 있음
-- `focused: true`: 대상 창에서 영상 탭이 선택되어 있음
-- `nextCount: 1`: 활성화된 다음 영상 버튼이 하나
-- `nextDisabledCount`: 비활성화된 다음 버튼 수
-- `inaccessibleFrames`: Chrome 페이지 코드에서 접근할 수 없는 iframe 수
+| Status field | Expected result |
+| --- | --- |
+| `videoCount` | `1` |
+| `playerReady` | `true`, with a positive `duration` |
+| `focused` | `true`: the target tab is selected in its window |
+| `nextCount` | `1` for button navigation; a tested YouTube shortcut can work with `0` |
+| `nextDisabledCount` | Number of disabled next buttons |
+| `inaccessibleFrames` | Frames the page script cannot access |
 
-다음 버튼은 기본으로 `다음`, `다음 영상`, `Next`, `Next video` 레이블 또는 `rel="next"`를 찾습니다. 버튼이 없거나 비활성화되면 현재 영상 저장 후 종료합니다. 후보가 여러 개면 이동하지 않고 중단합니다.
-
-### 사이트에 맞는 버튼 설정
-
-기본 탐색으로 다음 버튼을 찾지 못하면 CSS 선택자를 지정합니다. Chrome 개발자 도구의 요소 선택 기능으로 **다음 영상 버튼**을 선택하고 우클릭 → **Copy → Copy selector**로 복사할 수 있습니다. 다음 예제의 선택자는 실제 페이지에 맞게 바꾸세요.
+### Record one or more videos
 
 ```bash
-python3 recorder.py --diagnose --video-next-selector '#next-video'
-python3 recorder.py --check --video-next-selector '#next-video'
+# Record the current video from the beginning.
+python3 recorder.py --run
+
+# Record up to 10 videos, including the current video.
+python3 recorder.py --run --max-videos 10
 ```
 
-`nextCandidates`에 의도한 버튼 하나가 표시되는지 확인합니다. 선택한 버튼은 현재 탭의 다음 영상을 열어야 합니다. 새 탭·새 창을 여는 링크는 지원하지 않습니다.
+Saved site settings are applied automatically. If a saved button selector disappears on a later page, the script tries semantic discovery again; ambiguous candidates stop the session. Explicit selectors from the command line or `--config` override saved selectors.
 
-화면에 영상이 여러 개 있으면 실제 플레이어를 가리키는 선택자도 지정합니다. 선택자는 HTML `<video>` 요소 자체를 가리켜야 합니다.
+The script tests playback, rewinds, starts OBS, plays the video, and stops OBS when the video ends. Each video gets a separate recording. Fullscreen is enabled by default; add `--no-fullscreen` for the normal player view. If fullscreen cannot be confirmed, the script logs a warning and records in the normal view.
+
+After OBS stops and the file is verified, the script waits 10 seconds, uses the next button or tested shortcut, and waits for new media to load. With button navigation, no enabled next button ends the session normally. If shortcut navigation cannot load new media, the session stops with an error. Multiple button candidates stop the session so you can specify a selector. The recording limit is checked before advancing.
+
+Keep the target tab selected and its window open and unminimized. With window capture, other apps may be in front during recording; the script brings Chrome forward when starting playback.
+
+Press **Control+C** to interrupt. The script attempts to pause playback and stop and save the recording it started. Check OBS directly if cleanup fails. A new run records the current video from the beginning.
+
+## Customization
+
+### Save your settings
+
+Copy the example once, then edit `config.json` in any text editor:
 
 ```bash
-python3 recorder.py --check \
+cp config.example.json config.json
+```
+
+The example contains every supported setting and preserves the existing defaults. For a site with a specific player and next button, change these entries:
+
+```json
+{
+  "max_videos": 10,
+  "video_selector": "#player video",
+  "video_next_selector": "#next-video",
+  "video_load_timeout": 60,
+  "no_fullscreen": true
+}
+```
+
+Replace the selectors with values from your page, then check them before recording:
+
+```bash
+python3 recorder.py --config config.json --diagnose
+python3 recorder.py --config config.json --check
+python3 recorder.py --config config.json --run
+
+# Override saved settings for one run.
+python3 recorder.py --config config.json --run --max-videos 1 --fullscreen
+```
+
+This configuration file is loaded **only when you pass `--config`**. Relative paths are resolved from your terminal's current directory. For recording options, precedence is **command-line options → configuration file → built-in defaults**. Nonempty player and next-button selectors from these options override the automatically loaded site profile. You can omit settings you do not need. Unknown keys and invalid values produce an error before Chrome or OBS is controlled.
+
+Configuration keys use underscores: `--video-load-timeout` becomes `video_load_timeout`. For the boolean `no_fullscreen`, use JSON `true` or `false`; `--fullscreen` overrides a saved `true`. Set `countdown` to `null` to use the recorder-specific default. Keep a mode such as `--run` on the command line and passwords in the environment variable or interactive prompt.
+
+`config.json` is ignored by Git. Keep your changes there; leave [config.example.json](config.example.json) as a template for other users.
+
+### Select the player and next button
+
+Most site-specific changes can be made with options, without editing Python or JavaScript.
+
+By default, the script looks for one visible HTML `<video>` and a next control identified by labels such as `Next video`, `Next lesson`, `다음 동영상`, or `다음 강의`, a `rel="next"` attribute, or next-control identifiers. Shortcut suffixes such as `(Shift+N)` are supported. Video-specific controls take priority over generic `Next` labels.
+
+1. Open Chrome Developer Tools and inspect the next-video button.
+2. Right-click its element and choose **Copy → Copy selector**.
+3. Replace `#next-video` below with that selector. If needed, replace `#player video` with a selector pointing directly to the HTML `<video>` element.
+4. Diagnose first and confirm that `nextCandidates` contains exactly the intended enabled button.
+
+```bash
+python3 recorder.py --diagnose \
   --video-selector '#player video' \
   --video-next-selector '#next-video'
-```
 
-### 영상 하나 또는 여러 개 녹화
-
-현재 영상을 처음부터 하나만 녹화하려면:
-
-```bash
-python3 recorder.py --run
-```
-
-현재 영상을 포함해 최대 10개를 연속 녹화하려면:
-
-```bash
 python3 recorder.py --run \
-  --max-videos 10 \
-  --video-next-selector '#next-video'
+  --video-selector '#player video' \
+  --video-next-selector '#next-video' \
+  --max-videos 10
 ```
 
-실행 순서는 **재생 시험 → 일시정지·0초 복귀 → OBS 시작 → 영상 재생 → 영상 종료 → OBS 종료·파일 확인 → 대기 → 다음 버튼 클릭 → 새 영상 로딩 확인**입니다. 영상마다 새 녹화 파일을 만듭니다. `--max-videos`에 도달하면 다음 버튼을 누르지 않습니다.
+These selectors are examples, not universal values. The next button must load the next video in the **same tab**.
 
-기본으로 플레이어를 전체화면으로 녹화합니다. 일반 화면으로 녹화하려면 `--no-fullscreen`을 추가합니다. 대상 Chrome 창의 탭을 바꾸거나 창을 최소화·닫지 마세요. 윈도우 캡처라면 다른 앱으로 전환해도 대상 탭은 선택된 상태를 유지해야 합니다. 녹화 시작 시에는 Chrome을 다시 앞으로 가져옵니다.
+To save a working selector, use it with `--test`. To reset all saved site profiles, move `.site-profiles.json` elsewhere and run `--test` again. This file is ignored by Git and contains site origins and selectors, not full video URLs or passwords.
 
-`Control+C`로 중단하면 영상을 일시정지하고 이 실행이 시작한 녹화를 종료·저장하려고 시도합니다. 종료 확인에 실패하면 OBS에서 직접 상태와 파일을 확인하세요. 재실행은 현재 탭의 영상을 처음부터 새로 녹화하며 자동 이어받기는 지원하지 않습니다.
+### Recording options
 
-### 옵션
+All times are in seconds. Run `python3 recorder.py --help` for the full command list.
 
-| 옵션 | 기본값 | 용도 |
+| Option | Default | Change this when… |
 | --- | --- | --- |
-| `--max-videos 10` | 1 | 현재 영상을 포함한 총 녹화 수 |
-| `--video-next-selector '#next-video'` | 자동 탐색 | 다음 영상 버튼 CSS 선택자 |
-| `--video-selector '#player video'` | 보이는 모든 video 중 하나 | 녹화할 HTML video 선택자 |
-| `--video-timeout 14400` | 14,400초 | 영상 하나의 최대 재생 대기시간 |
-| `--video-load-timeout 45` | 45초 | 첫 영상과 다음 영상의 로딩 대기시간 |
-| `--no-fullscreen` | 전체화면 사용 | 일반 화면으로 녹화 |
-| `--save-wait 10` | 10초 | 저장 확인 후 다음 버튼을 누르기 전 대기 |
-| `--stall-seconds 120` | 120초 | 영상 진행 정체 시 중단 기준 |
-| `--countdown 2` | OBS 0초 | 녹화 시작 후 재생 전 추가 대기 |
-| `--obs-port 4455` | 4455 | 로컬 OBS WebSocket 서버 포트 |
+| `--max-videos` | `1` | You want to record more than the current video. |
+| `--video-selector` | Automatic | The page contains multiple visible videos. |
+| `--video-next-selector` | Automatic | The next button is missing or ambiguous. |
+| `--video-timeout` | `14400` | A video may run longer than four hours. |
+| `--video-load-timeout` | `45` | The initial or next video loads slowly. |
+| `--no-fullscreen` | Fullscreen enabled | You want the normal player view. |
+| `--fullscreen` | Fullscreen enabled | You want to override `no_fullscreen: true` in a configuration file. |
+| `--save-wait` | `10` | You want a different delay before clicking next. |
+| `--stall-seconds` | `120` | Playback may remain stalled for longer. |
+| `--countdown` | `0` for OBS; `6` for EaseUS | You need a delay between starting recording and playback. |
+| `--obs-port` | `4455` | You changed the OBS WebSocket server port. |
 
-기존 EaseUS 단축키 제어는 `--recorder easeus`로 선택합니다. 이때만 `--start-hotkey`, `--stop-hotkey`를 사용하며 둘 다 기본값은 `command+9`입니다. EaseUS는 실제 녹화 상태와 저장 파일을 확인하지 못합니다. `--test-hotkey`는 10초 시험 녹화의 별칭입니다.
+Set the **output folder, file name, format, resolution, frame rate, quality, capture target, and audio device in OBS**. These are not controlled by the options above.
 
-### 자동화 지원 범위
+### Legacy EaseUS control
 
-접근 가능한 HTML `video`와 같은 탭에서 동작하는 다음 버튼이 필요합니다. 같은 출처의 iframe과 열린 shadow root도 탐색합니다. 다른 출처의 iframe, 닫힌 shadow root, 길이가 없는 라이브 방송, 별도 앱의 플레이어는 자동 제어하지 못할 수 있습니다. 이런 경우 OBS 버튼으로 직접 녹화할 수 있습니다.
+Use shortcuts matching your EaseUS settings:
 
-URL 변경만으로 새 영상이라고 판단하지 않습니다. 실제 video 요소 교체나 미디어 로딩 갱신을 기다립니다. 자동 재생으로 영상이 먼저 바뀌거나 재생 오류·정체·저장 실패가 발생하면 다음 버튼을 누르지 않고 중단합니다.
+```bash
+python3 recorder.py --run --recorder easeus \
+  --start-hotkey 'command+9' --stop-hotkey 'command+9'
+```
 
-## 파일 구성과 검증
+Both shortcuts default to `command+9`. Supported modifiers are `command`, `control`, `option`, and `shift`, followed by a single letter or digit. EaseUS control cannot verify the recording state or saved file. `--test-hotkey` is an alias for the 10-second test mode.
 
-- `recorder.py`: 명령행 실행, Chrome 제어, 녹화 흐름 관리
-- `obs_control.py`: 로컬 OBS WebSocket 연결·인증, 녹화 시작·종료와 파일 확인
-- `browser.js`: **Chrome 페이지 안에서 실행되는 JavaScript**. HTML video의 재생·일시정지·종료 상태와 다음 버튼을 읽고 조작합니다. Python이 필요할 때 Chrome에 전달하므로 직접 실행하거나 브라우저 확장으로 설치하지 않습니다. 다음 화면으로의 이동은 이 파일의 버튼 클릭이 담당합니다.
-- `tests/`: Python 및 브라우저 모사 테스트
+## FAQ
+
+### Which sites support automatic recording?
+
+Automation needs an accessible HTML `<video>` with a finite duration. Continuing also needs a same-tab next button or the tested YouTube shortcut. The script searches same-origin iframes and open shadow roots; cross-origin frames, closed shadow roots, live streams, and native app players may not be controllable. Automatic discovery does not guarantee support for every site. Use OBS manually for these cases.
+
+### Can this tool bypass DRM or fix a protected-content black screen?
+
+No. It uses normal OBS recording and browser playback controls and does not change content protection or browser security settings. Protected content may be excluded from capture or appear black. A successful file or playback check does not establish recording permission or prove that protected video was captured. See [Intended Use and Limitations](#intended-use-and-limitations).
+
+### Why does the script stop instead of going to the next video?
+
+It stops on ambiguous buttons, playback errors, stalled playback, unexpected media changes, or failed save verification. Turn off automatic next-video playback and use `--diagnose` to inspect selectors. A URL change alone does not count as new media.
+
+### Why is there no sound, or why is the sound doubled?
+
+Check the Multi-Output Device, system output, OBS audio permissions, and the unmuted BlackHole 2ch input. Mute duplicate audio from screen capture or global audio inputs. Replay a test recording to confirm the result.
+
+### Why do the Mac volume keys stop working?
+
+macOS does not provide its usual volume control for Multi-Output Devices. Adjust the playback app or individual output device volume. Restore your usual system output after recording. See the [BlackHole FAQ](https://github.com/ExistentialAudio/BlackHole#faq).
+
+### Do the checks confirm that the recording looks and sounds correct?
+
+No. The script checks source settings, recording state, and file existence and size. Play the test recording to verify the actual picture and sound.
+
+## Developer Guide
+
+| File | Responsibility |
+| --- | --- |
+| [recorder.py](recorder.py) | CLI options, Chrome control, and recording flow |
+| [obs_control.py](obs_control.py) | Local OBS WebSocket authentication, recording control, and save checks |
+| [browser.js](browser.js) | Player discovery, playback, fullscreen, and next-button actions inside Chrome |
+| [site_profiles.py](site_profiles.py) | Origin-scoped local profiles and atomic profile updates |
+| [config.example.json](config.example.json) | Copyable defaults for user customization |
+| [tests/](tests/) | Python tests and simulated browser tests |
+
+`browser.js` is loaded by Python and executed inside the selected Chrome tab. You do not need to run it separately or install a browser extension.
 
 ```bash
 python3 -m unittest discover -s tests -v
 node tests/browser_tests.cjs
 ```
 
-테스트는 OBS 통신과 브라우저 구조를 모사합니다. 실제 OBS 앱, macOS 권한, 캡처한 화면과 시스템 소리는 Mac에서 시험 녹화 파일을 재생해 확인해야 합니다.
+Tests simulate OBS communication and browser structures. Actual capture, macOS permissions, and recorded audio need a test recording on your Mac. Application messages, CLI help, and password prompts are always in English, regardless of the README language. Site labels, scene names, file paths, and error details supplied by external software retain their original language.
 
-참고: [OBS WebSocket](https://github.com/obsproject/obs-websocket), [macOS 화면 캡처](https://obsproject.com/kb/macos-screen-capture-source), [macOS 오디오 캡처](https://obsproject.com/kb/macos-desktop-audio-capture-guide)
+Keep contributions within ordinary screen recording and authorized non-DRM browser testing. Do not add DRM/key extraction, protection-disabling flags, or changes intended to circumvent browser/OS capture restrictions. Language-specific READMEs describe the same behavior; update all three when commands or defaults change.
+
+## Resources
+
+- [OBS WebSocket](https://github.com/obsproject/obs-websocket)
+- [OBS macOS Screen Capture Guide](https://obsproject.com/kb/macos-screen-capture-source)
+- [OBS macOS Desktop Audio Capture Guide](https://obsproject.com/kb/macos-desktop-audio-capture-guide)
+- [BlackHole](https://github.com/ExistentialAudio/BlackHole)
+- [Apple FairPlay screen-capture guidance](https://developer.apple.com/library/archive/qa/qa1970/) — an example of platform-enforced capture restrictions, not a guarantee about all DRM/browser combinations.

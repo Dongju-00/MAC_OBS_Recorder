@@ -1,5 +1,6 @@
 function (action, nextSelector = '', playerSelector = '') {
-  // Runs inside the selected Chrome tab. No site-specific routes or APIs.
+  // Ordinary DOM playback controls for authorized, non-DRM browser testing.
+  // No key extraction, DRM configuration changes, or capture-protection bypass.
   const visible = el => {
     const rect = el.getBoundingClientRect();
     const style = el.ownerDocument.defaultView.getComputedStyle(el);
@@ -26,17 +27,56 @@ function (action, nextSelector = '', playerSelector = '') {
   const all = selector => [...new Set(roots.flatMap(root => [...root.querySelectorAll(selector)]))];
   const label = el => [el.innerText, el.getAttribute('aria-label'), el.getAttribute('title')]
     .filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+  const hostname = new URL(location.href).hostname;
+  const youtube = hostname === 'youtube.com' || hostname.endsWith('.youtube.com');
+  const nextScore = el => {
+    // YouTube also labels unrelated page/carousel arrows "Next". Only its
+    // player controls may advance media; a missing control uses the tested shortcut.
+    if (youtube && !(el.getAttribute('class') || '').split(/\s+/).includes('ytp-next-button')
+        && !(el.closest && el.closest('#movie_player, .html5-video-player'))) return 0;
+    let score = 0;
+    for (const raw of [el.innerText, el.getAttribute('aria-label'), el.getAttribute('title')]) {
+      const text = (raw || '').replace(/\s*\((?:shift|ctrl|control|alt|option|command)[^)]*\)\s*$/i, '').trim();
+      if (/^(?:next\s+(?:video|lesson|lecture|episode|clip)|다음\s*(?:영상|동영상|강의|수업))\s*[›»→]*$/i.test(text)) score = 100;
+      else if (/^(?:next|다음)\s*[›»→]*$/i.test(text)) score = Math.max(score, 60);
+    }
+    if ((el.getAttribute('rel') || '').split(/\s+/).includes('next')) score = Math.max(score, 80);
+    for (const attr of ['id', 'class', 'data-testid', 'data-test']) {
+      const value = el.getAttribute(attr) || '';
+      if (/(?:^|[\s_-])(?:next[-_](?:video|lesson|lecture|episode|button)|(?:video|player)[-_]next)(?:$|[\s_-])/i.test(value)) {
+        score = Math.max(score, 90);
+      }
+    }
+    return score;
+  };
+  const selectorFor = el => {
+    const tag = el.tagName.toLowerCase();
+    const selectors = ['id', 'data-testid', 'data-test', 'aria-label', 'title', 'rel']
+      .filter(attr => el.getAttribute(attr))
+      .map(attr => `${tag}[${attr}=${JSON.stringify(el.getAttribute(attr))}]`);
+    for (const token of (el.getAttribute('class') || '').split(/\s+/).filter(Boolean)) {
+      selectors.push(`${tag}[class~=${JSON.stringify(token)}]`);
+    }
+    for (const selector of selectors) {
+      try {
+        const found = all(selector).filter(visible);
+        if (found.length === 1 && found[0] === el) return selector;
+      } catch (_) { /* Try another stable attribute. */ }
+    }
+    return null; // Keep semantic discovery when no unique attribute exists.
+  };
   let videos, matches;
   try {
     videos = all(playerSelector || 'video').filter(el => el.tagName === 'VIDEO' && visible(el));
     matches = nextSelector ? all(nextSelector).filter(visible) :
-      all('button, a, [role="button"]').filter(el => visible(el) &&
-        ((el.getAttribute('rel') || '').split(/\s+/).includes('next') ||
-         [el.innerText, el.getAttribute('aria-label'), el.getAttribute('title')].some(text =>
-           /^(?:다음(?:\s*영상)?|next(?:\s+video)?)[\s›»→]*$/i.test((text || '').trim()))));
-  } catch (error) { return JSON.stringify({failure: 'video CSS 선택자 오류: ' + error.message}); }
+      all('button, a, [role="button"]').filter(el => visible(el) && nextScore(el) > 0);
+  } catch (error) { return JSON.stringify({failure: 'Invalid video CSS selector: ' + error.message}); }
   matches = matches.filter(el => !matches.some(other => el !== other && el.contains(other)));
   const disabled = el => el.disabled || el.getAttribute('aria-disabled') === 'true';
+  if (!nextSelector) {
+    const best = Math.max(0, ...matches.map(nextScore));
+    matches = matches.filter(el => nextScore(el) === best);
+  }
   const nextCandidates = matches.filter(el => !disabled(el));
   const video = videos.length === 1 ? videos[0] : null;
   const memory = window.__videoRecorderState || (window.__videoRecorderState = {
@@ -62,10 +102,10 @@ function (action, nextSelector = '', playerSelector = '') {
   }
   const ready = () => !!video && !player.loading && video.readyState >= 2;
   if (['prepare', 'play', 'pause', 'focus-player', 'fullscreen'].includes(action) && !video) {
-    return JSON.stringify({failure: '제어 가능한 video가 정확히 1개여야 합니다. --video-selector로 대상을 지정하세요.'});
+    return JSON.stringify({failure: 'Exactly one controllable video is required. Specify it with --video-selector.'});
   }
   if (['prepare', 'play'].includes(action) && !ready()) {
-    return JSON.stringify({failure: '새 영상의 로딩 완료를 기다려야 합니다.'});
+    return JSON.stringify({failure: 'Wait for the new video to finish loading.'});
   }
   try {
     if (action === 'prepare') {
@@ -95,13 +135,13 @@ function (action, nextSelector = '', playerSelector = '') {
       }
     }
     if (action === 'next') {
-      if (nextCandidates.length !== 1) throw new Error('다음 영상 버튼이 정확히 1개여야 합니다. --video-next-selector를 확인하세요.');
+      if (nextCandidates.length !== 1) throw new Error('Exactly one next-video control is required. Check --video-next-selector.');
       const next = nextCandidates[0];
       const target = next.getAttribute('target');
-      if (target && target.toLowerCase() !== '_self') throw new Error('다음 영상은 현재 탭에서 열려야 합니다.');
+      if (target && target.toLowerCase() !== '_self') throw new Error('The next video must open in the current tab.');
       const href = next.getAttribute('href');
       if (href && !['http:', 'https:', 'file:'].includes(new URL(href, location.href).protocol)) {
-        throw new Error('다음 영상 링크의 프로토콜을 지원하지 않습니다.');
+        throw new Error('Unsupported next-video link protocol.');
       }
       next.click();
     }
@@ -122,6 +162,7 @@ function (action, nextSelector = '', playerSelector = '') {
     inaccessibleFrames
   };
   if (action === 'diagnose') {
+    result.nextSelector = nextCandidates.length === 1 ? selectorFor(nextCandidates[0]) : null;
     result.nextCandidates = matches.map(el => ({tag: el.tagName, text: label(el),
       id: el.getAttribute('id'), class: el.getAttribute('class'),
       disabled: !!disabled(el), href: el.getAttribute('href')}));

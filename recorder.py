@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""macOS / Chrome / OBS recording. Python standard library only."""
+"""General-purpose macOS / Chrome / OBS recording for authorized non-DRM content.
+
+Uses ordinary playback and capture controls. Does not change DRM/security
+settings, extract decryption keys, or bypass capture protections.
+Python standard library only.
+"""
 import argparse
 import json
 import math
@@ -10,6 +15,7 @@ import sys
 import time
 
 from obs_control import OBSRecorder
+from site_profiles import load_profile, save_profile, site_origin
 
 
 ROOT = Path(__file__).resolve().parent
@@ -23,7 +29,7 @@ def apple(script):
     result = subprocess.run(['/usr/bin/osascript', '-'], input=script,
                             capture_output=True, text=True, timeout=25)
     if result.returncode:
-        raise RuntimeError('macOS 제어 실패: '+result.stderr.strip())
+        raise RuntimeError('macOS automation failed: '+result.stderr.strip())
     return result.stdout.strip()
 
 
@@ -40,29 +46,34 @@ def hotkey_script(spec):
             or not re.fullmatch('[a-z0-9]', pieces[-1])
             or any(x not in modifiers for x in pieces[:-1])
             or len(set(pieces[:-1])) != len(pieces[:-1])):
-        raise ValueError('단축키 형식 예: control+shift+command+9')
-    # macOS HIToolbox/Events.h kVK_ANSI_* values. A Unicode keystroke "9"
-    # need not reach a recorder's global shortcut handler as a physical key.
-    digit_codes = {'0': 29, '1': 18, '2': 19, '3': 20, '4': 21,
-                   '5': 23, '6': 22, '7': 26, '8': 28, '9': 25}
-    key = ('key code '+str(digit_codes[pieces[-1]]) if pieces[-1] in digit_codes
-           else 'keystroke '+literal(pieces[-1]))
+        raise ValueError('Example shortcut format: control+shift+command+9')
+    # macOS HIToolbox/Events.h kVK_ANSI_* values. Text-based `keystroke`
+    # may synthesize extra modifiers with a non-Latin input source (observed:
+    # Shift+N became Alt+Shift+N under Korean). Send physical shortcut keys.
+    key_codes = {'a': 0, 's': 1, 'd': 2, 'f': 3, 'h': 4, 'g': 5,
+                 'z': 6, 'x': 7, 'c': 8, 'v': 9, 'b': 11, 'q': 12,
+                 'w': 13, 'e': 14, 'r': 15, 'y': 16, 't': 17,
+                 'o': 31, 'u': 32, 'i': 34, 'p': 35, 'l': 37,
+                 'j': 38, 'k': 40, 'n': 45, 'm': 46,
+                 '0': 29, '1': 18, '2': 19, '3': 20, '4': 21,
+                 '5': 23, '6': 22, '7': 26, '8': 28, '9': 25}
+    key = 'key code '+str(key_codes[pieces[-1]])
     return ('tell application "System Events" to '+key
             +' using {'+', '.join(modifiers[x] for x in pieces[:-1])+'}')
 
 
 def validate_page(state, allow_loading=False):
     if not state.get('focused'):
-        raise RuntimeError('대상 영상 탭이 선택되어 있지 않습니다.')
+        raise RuntimeError('The target video tab is not selected.')
     if state.get('videoCount') != 1 or not state.get('videoId'):
-        raise RuntimeError('제어 가능한 영상이 정확히 1개여야 합니다. --video-selector를 확인하세요.')
+        raise RuntimeError('Exactly one controllable video is required. Check --video-selector.')
     if state.get('error') or state.get('playError'):
-        raise RuntimeError('영상 재생 오류: '+str(state.get('playError') or state['error']))
+        raise RuntimeError('Video playback error: '+str(state.get('playError') or state['error']))
     if not allow_loading and not state.get('playerReady'):
-        raise RuntimeError('영상 로딩이 아직 완료되지 않았습니다.')
+        raise RuntimeError('The video has not finished loading.')
     duration = state.get('duration')
     if not isinstance(duration, (int, float)) or not math.isfinite(duration) or duration <= 0:
-        raise RuntimeError('유한한 영상 길이를 읽지 못했습니다. 재생 후 일시정지하고 점검하세요.')
+        raise RuntimeError('Cannot read a finite video duration. Play and pause the video, then check again.')
 
 
 class ProgressMonitor:
@@ -75,25 +86,26 @@ class ProgressMonitor:
 
     def update(self, state, now):
         if state.get('videoId') != self.video_id:
-            raise RuntimeError('녹화 중 영상이 먼저 바뀌었습니다. 자동 다음 재생을 끄세요.')
+            raise RuntimeError('The video changed during recording. Disable automatic next-video playback.')
         validate_page(state)
         if state.get('ended'): return True
         current = state.get('time', 0)
         if self.last_time is None or current > self.last_time + 0.05:
             self.last_time, self.last_progress = current, now
         elif now - self.last_progress >= self.stall_seconds:
-            raise RuntimeError('영상 진행이 오래 멈췄습니다. 재생 상태를 확인하세요.')
+            raise RuntimeError('Video progress has stalled. Check playback.')
         return False
 
 
 class Chrome:
     def __init__(self, selector='', player_selector=''):
         ids = apple('tell application "Google Chrome"\n'
-                    'if (count of windows) is 0 then error "영상 탭을 먼저 여세요."\n'
+                    'if (count of windows) is 0 then error "Open a video tab first."\n'
                     'return (id of front window as text) & "," & (id of active tab of front window as text)\nend tell')
         self.window, self.tab = [int(x) for x in ids.split(',')]
         self.selector = selector
         self.player_selector = player_selector
+        self.next_hotkey = ''
         self.source = (ROOT/'browser.js').read_text(encoding='utf-8')
 
     def focus(self):
@@ -123,8 +135,8 @@ return frontApp & linefeed & frontWindow''')
             front_app, front_window = raw.split('\n')[:2]
             if front_app == 'Google Chrome' and int(front_window) == self.window: return
             if time.monotonic() > deadline:
-                raise RuntimeError(f'크롬 대상 창을 앞으로 가져오지 못했습니다(앞 앱={front_app}, 앞 창={front_window}, '
-                                   f'대상 창={self.window}). 다른 앱이 화면을 가리고 있는지 확인하세요.')
+                raise RuntimeError(f'Cannot bring the target Chrome window forward (front app={front_app}, front window={front_window}, '
+                                   f'target window={self.window}). Check whether another app is covering it.')
 
     def enter_fullscreen(self):
         """Fullscreen the player; returns whether it is fullscreen afterwards."""
@@ -148,27 +160,33 @@ return frontApp & linefeed & frontWindow''')
         self.ensure_front()  # the Space key below goes to the frontmost app
         focused = self.call('focus-player')
         if not focused.get('playerHasFocus'):
-            raise RuntimeError('플레이어에 키보드 포커스를 두지 못했습니다.')
+            raise RuntimeError('Cannot focus the video player for keyboard input.')
         try:
             apple(f'''tell application "Google Chrome"
-if ((id of front window) as text) is not {literal(self.window)} then error "대상 크롬 창이 앞에 없습니다."
-if ((id of active tab of front window) as text) is not {literal(self.tab)} then error "대상 영상 탭이 앞에 없습니다."
+if ((id of front window) as text) is not {literal(self.window)} then error "The target Chrome window is not in front."
+if ((id of active tab of front window) as text) is not {literal(self.tab)} then error "The target video tab is not in front."
 end tell
 tell application "System Events"
-if (name of first application process whose frontmost is true) is not "Google Chrome" then error "크롬이 앞에 없습니다."
+if (name of first application process whose frontmost is true) is not "Google Chrome" then error "Chrome is not in front."
 key code 49
 end tell''')
             time.sleep(0.2)
         finally:
             current = self.call('pause')
         if current.get('userActivated') is False:
-            raise RuntimeError('Chrome이 사용자 키 입력을 확인하지 못했습니다. 영상 재생 버튼을 한 번 직접 누르고 다시 실행하세요.')
+            raise RuntimeError('Chrome did not confirm user input. Click the video play button once and try again.')
 
     def call(self, action='inspect'):
+        if action == 'next' and getattr(self, 'next_hotkey', ''):
+            self.ensure_front()
+            if not self.call().get('focused'):
+                raise RuntimeError('The target tab changed before next-video navigation.')
+            apple(hotkey_script(self.next_hotkey))
+            return {}  # Navigation may temporarily make the document unavailable.
         if action in ('prepare', 'play', 'next', 'focus-player', 'fullscreen'):
             before = self.call()
             if not before['focused']:
-                raise RuntimeError('크롬 대상 탭이 선택되어 있지 않습니다: '
+                raise RuntimeError('The target Chrome tab is not selected: '
                                    +json.dumps(before['focusDetails'], ensure_ascii=False))
         javascript = '('+self.source+')('+','.join(json.dumps(x) for x in
             (action, self.selector, self.player_selector))+')'
@@ -220,7 +238,7 @@ class EaseUS:
             try:
                 apple(self.stop_script)
             except Exception as error:
-                raise RuntimeError('녹화 종료 전송 결과를 확인할 수 없습니다. 이지어스에서 직접 확인하세요: '+str(error)) from error
+                raise RuntimeError('Cannot confirm delivery of the stop shortcut. Check EaseUS directly: '+str(error)) from error
 
     def close(self):
         pass
@@ -233,13 +251,13 @@ def create_recorder(args):
     try:
         status = recorder.check()
         if status['recording']:
-            raise RuntimeError('OBS가 이미 녹화 중입니다. 기존 녹화를 직접 종료한 뒤 실행하세요.')
-        say(f"OBS 연결 확인: 장면={status['scene']}, 저장 폴더={status['recordDirectory']}")
+            raise RuntimeError('OBS is already recording. Stop the existing recording manually before continuing.')
+        say(f"OBS connected: scene={status['scene']}, recording directory={status['recordDirectory']}")
         target = status.get('captureTarget')
         if target:
-            say('OBS 윈도우 캡처 대상: '+target)
+            say('OBS window capture target: '+target)
             if 'Chrome' not in target:
-                say('경고: 윈도우 캡처 대상이 Chrome 창이 아닙니다. OBS 소스의 창 선택을 확인하세요.')
+                say('Warning: the window capture target is not Chrome. Check the OBS source window selection.')
         return recorder
     except BaseException:
         recorder.close()
@@ -264,7 +282,7 @@ def verify_playback(browser):
             validate_page(current)
             if current.get('paused') is False: return
             if time.monotonic() > deadline:
-                raise RuntimeError('녹화 전 영상 재생 시작을 확인하지 못했습니다.')
+                raise RuntimeError('Could not confirm video playback before recording.')
     finally:
         browser.call('pause')
 
@@ -280,19 +298,22 @@ def wait_video(browser, previous_id=None, timeout=45):
             current = None
         if current is not None:
             if not current.get('focused'):
-                raise RuntimeError('영상 로딩 중 대상 탭이 바뀌었습니다.')
+                raise RuntimeError('The target tab changed while the video was loading.')
             if (current.get('videoId') and current['videoId'] != previous_id
                     and current.get('playerReady') and (previous_id is None or not current.get('ended'))):
                 validate_page(current)
                 return current
         if time.monotonic() >= deadline:
-            raise RuntimeError('새 영상 로딩을 확인하지 못했습니다. 다음 버튼과 플레이어를 점검하세요.')
+            raise RuntimeError('Could not confirm new video loading. Check the next control and player.')
         time.sleep(0.5)
 
 
-def record_one(browser, recorder, args):
+def record_one(browser, recorder, args, sample_seconds=None):
     initial = browser.call()
     validate_page(initial)
+    if (getattr(browser, 'profile_origin', None)
+            and site_origin(initial['url']) != browser.profile_origin):
+        raise RuntimeError('Navigation reached another site. Run --test on that site first.')
     verify_playback(browser)
     browser.call('prepare')
     deadline = time.monotonic()+30
@@ -300,24 +321,25 @@ def record_one(browser, recorder, args):
         ready = browser.call()
         validate_page(ready, allow_loading=True)
         if ready['videoId'] != initial['videoId']:
-            raise RuntimeError('녹화 준비 중 영상이 바뀌었습니다.')
+            raise RuntimeError('The video changed while preparing to record.')
         if (ready.get('playerReady') and not ready.get('seeking')
                 and ready.get('time', 999) <= 0.5 and ready.get('readyState', 0) >= 2):
             break
         if time.monotonic() > deadline:
-            raise RuntimeError('영상 처음 위치의 로딩을 기다리다가 중단했습니다.')
+            raise RuntimeError('Timed out waiting for the beginning of the video to load.')
         time.sleep(0.5)
     fullscreen = not args.no_fullscreen
     try:
         bring_to_front(browser)
         if fullscreen and not browser.enter_fullscreen():
-            say('전체화면을 확인하지 못했습니다. 일반 화면으로 녹화합니다.')
-        say('영상 녹화를 시작합니다.')
+            say('Could not confirm fullscreen. Recording in the normal player view.')
+        say('Starting video recording.')
         recorder.start()
         time.sleep(args.countdown)
         bring_to_front(browser)
         monitor = ProgressMonitor(initial, args.stall_seconds)
-        monitor.update(browser.call(), time.monotonic())
+        playback_start = browser.call()
+        monitor.update(playback_start, time.monotonic())
         browser.call('play')
         started = time.monotonic()
         last_log = started
@@ -325,26 +347,114 @@ def record_one(browser, recorder, args):
             current = browser.call()
             now = time.monotonic()
             if monitor.update(current, now): break
+            if sample_seconds is not None and now-started >= sample_seconds:
+                if current.get('time', 0) <= playback_start.get('time', 0) + 0.05:
+                    raise RuntimeError('Test playback did not advance during recording.')
+                break
             if now-started >= args.video_timeout:
-                raise RuntimeError('영상당 최대 대기시간을 넘겼습니다.')
+                raise RuntimeError('The per-video timeout was exceeded.')
             if now-last_log >= 60:
-                say(f"녹화 진행 {int(current['time'])} / {int(current['duration'])}초")
+                say(f"Recording progress: {int(current['time'])} / {int(current['duration'])} seconds")
                 last_log = now
             time.sleep(0.5)
     finally:
         try:
             browser.call('pause')
         except Exception as error:
-            say('영상 일시정지 확인 실패: '+str(error))
+            say('Could not confirm video pause: '+str(error))
         try:
             saved_path = recorder.stop()
-            if saved_path: say('영상 녹화 파일 저장 확인: '+saved_path)
+            if saved_path: say('Recording file verified: '+saved_path)
         finally:
             if fullscreen:
                 try: browser.exit_fullscreen()
-                except Exception as error: say('전체화면 해제 확인 실패: '+str(error))
+                except Exception as error: say('Could not confirm fullscreen exit: '+str(error))
 
     return initial['videoId']
+
+
+def apply_site_profile(browser, args):
+    url = browser.call()['url']
+    profile = load_profile(url)
+    if not profile: return
+    browser.profile_origin = site_origin(url)
+    if not args.video_selector:
+        browser.player_selector = profile['video_selector']
+    if not args.video_next_selector:
+        browser.selector = profile['video_next_selector']
+        browser.next_hotkey = profile['next_hotkey']
+        browser.profile_selector = bool(browser.selector) and not browser.next_hotkey
+    say('Loaded the tested site profile. Run --test to update it.')
+
+
+def navigation_state(browser):
+    current = browser.call()
+    if current.get('fullscreen'):
+        browser.exit_fullscreen()
+        current = browser.call()
+        if current.get('fullscreen'):
+            raise RuntimeError('Could not confirm fullscreen exit. Next-video navigation was stopped.')
+    if (getattr(browser, 'profile_selector', False)
+            and not current.get('nextCount') and not current.get('nextDisabledCount')):
+        previous = browser.selector
+        browser.selector = ''
+        try:
+            discovered = browser.call('diagnose')
+        except BaseException:
+            browser.selector = previous
+            raise
+        if discovered.get('nextCount'):
+            browser.selector = discovered.get('nextSelector') or ''
+            say('The page structure changed. Rediscovered the next-video control.')
+            return discovered
+        browser.selector = previous
+    return current
+
+
+def test_site(browser, recorder, args):
+    """Record a sample, prove navigation, then persist only the verified selectors."""
+    try:
+        status = browser.call('diagnose')
+        validate_page(status)
+        origin = site_origin(status['url'])
+        if status.get('nextCount', 0) > 1:
+            raise RuntimeError('Multiple next-control candidates found. Inspect --diagnose, then run --test with --video-next-selector.')
+        if status.get('nextCount', 0) == 1:
+            browser.selector = args.video_next_selector or status.get('nextSelector') or ''
+            browser.next_hotkey = ''
+            say('Next-video navigation: button '+(browser.selector or '(automatic discovery)'))
+        elif (not args.video_next_selector and not status.get('nextDisabledCount', 0)
+              and (origin == 'https://youtube.com' or origin.endswith('.youtube.com'))):
+            browser.next_hotkey = 'shift+n'
+            say('No YouTube player next control found. Testing Shift+N navigation.')
+        else:
+            raise RuntimeError('No usable next-video control found. Start from a playlist item with a successor or specify --video-next-selector.')
+        profile = dict(video_selector=browser.player_selector, video_next_selector=browser.selector,
+                       next_hotkey=browser.next_hotkey)
+        say('Recording a sample of up to 10 seconds, then navigating to the next video.')
+        recorded_id = record_one(browser, recorder, args, sample_seconds=10)
+        path = recorder.last_output_path
+        if not path or not Path(path).is_file() or Path(path).stat().st_size <= 0:
+            raise RuntimeError('Could not verify the test recording file.')
+        current = navigation_state(browser)
+        if not current.get('focused') or current.get('videoId') != recorded_id:
+            raise RuntimeError('The target video changed after the test recording. Disable automatic next-video playback.')
+        if not browser.next_hotkey and current.get('nextCount') != 1:
+            raise RuntimeError('Could not verify the next control after recording. Run --test again.')
+        say('Navigating to the next video: '+(browser.next_hotkey or browser.selector or 'automatically discovered button'))
+        browser.call('next')
+        say(f'Waiting for new video loading (up to {args.video_load_timeout:g} seconds).')
+        loaded = wait_video(browser, recorded_id, args.video_load_timeout)
+        if site_origin(loaded['url']) != origin:
+            raise RuntimeError('The next control opened another site. The site profile was not saved.')
+        verify_playback(browser)
+        browser.call('prepare')
+        save_profile(status['url'], profile)
+        say('Site profile saved. Play the sample to check picture and sound: '+str(path))
+        say('The next video is paused. To record, run: python3 recorder.py --run --max-videos 10')
+    finally:
+        try: browser.call('pause')
+        except Exception as error: say('Could not confirm pause after testing: '+str(error))
 
 
 def run_videos(browser, recorder, args):
@@ -352,51 +462,95 @@ def run_videos(browser, recorder, args):
         recorded_id = record_one(browser, recorder, args)
         if index+1 == args.max_videos: return
         time.sleep(args.save_wait)
-        current = browser.call()
+        current = navigation_state(browser)
         if not current.get('focused'):
-            raise RuntimeError('다음 영상 이동 전에 대상 탭이 바뀌었습니다.')
+            raise RuntimeError('The target tab changed before next-video navigation.')
         if current.get('videoId') != recorded_id:
-            raise RuntimeError('저장 대기 중 영상이 바뀌었습니다. 자동 다음 재생을 끄세요.')
-        if current.get('nextCount', 0) == 0:
-            say('사용 가능한 다음 영상 버튼이 없어 종료합니다.')
+            raise RuntimeError('The video changed while waiting after saving. Disable automatic next-video playback.')
+        if current.get('nextCount', 0) == 0 and not getattr(browser, 'next_hotkey', ''):
+            say('No enabled next-video control remains. Finished.')
             return
-        if current['nextCount'] != 1:
-            raise RuntimeError('다음 영상 버튼이 여러 개입니다. --video-next-selector를 지정하세요.')
+        if current['nextCount'] != 1 and not getattr(browser, 'next_hotkey', ''):
+            raise RuntimeError('Multiple next-video buttons found. Specify --video-next-selector.')
         previous_id = current['videoId']
         browser.call('next')
         wait_video(browser, previous_id, args.video_load_timeout)
 
 
-def main():
-    parser = argparse.ArgumentParser(description='macOS / Chrome / OBS 동영상 자동 녹화')
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description='macOS / Chrome / OBS recording for authorized, non-DRM content',
+                                     allow_abbrev=False)
+    parser.add_argument('--config', metavar='PATH', help='Load recording defaults from a JSON file')
     mode = parser.add_mutually_exclusive_group(required=True)
-    mode.add_argument('--check', action='store_true', help='현재 영상과 다음 버튼 점검')
-    mode.add_argument('--diagnose', action='store_true', help='영상과 다음 버튼 후보 진단')
-    mode.add_argument('--run', action='store_true', help='현재 영상부터 녹화하고 다음 버튼으로 이동')
+    mode.add_argument('--check', action='store_true', help='Inspect the current video and next control')
+    mode.add_argument('--diagnose', action='store_true', help='Diagnose video and next-control candidates')
+    mode.add_argument('--run', action='store_true', help='Record from the current video and advance to the next')
+    mode.add_argument('--test', action='store_true', help='Test a short recording and next-video navigation, then save the site profile')
     mode.add_argument('--test-recording', '--test-hotkey', dest='test_recording', action='store_true',
-                      help='현재 OBS 장면을 10초 시험 녹화. Chrome 조작 없음')
-    mode.add_argument('--check-obs', action='store_true', help='OBS 연결·장면·저장 폴더 점검')
+                      help='Record the current OBS scene for 10 seconds without controlling Chrome')
+    mode.add_argument('--check-obs', action='store_true', help='Check the OBS connection, scene, and recording directory')
     parser.add_argument('--recorder', choices=('obs','easeus'), default='obs')
     parser.add_argument('--obs-port', type=int, default=4455)
-    parser.add_argument('--max-videos', type=int, default=1, help='현재 영상을 포함한 총 녹화 수 (기본 1)')
-    parser.add_argument('--video-next-selector', default='', help='다음 영상 버튼의 CSS 선택자')
-    parser.add_argument('--video-selector', default='', help='녹화할 HTML video의 CSS 선택자')
-    parser.add_argument('--video-timeout', type=float, default=14400, help='영상당 최대 대기 초 (기본 14400)')
-    parser.add_argument('--video-load-timeout', type=float, default=45, help='새 영상 로딩 대기 초 (기본 45)')
-    parser.add_argument('--no-fullscreen', action='store_true')
+    parser.add_argument('--max-videos', type=int, default=1, help='Maximum videos to record, including the current one (default: 1)')
+    parser.add_argument('--video-next-selector', default='', help='CSS selector for the next-video control')
+    parser.add_argument('--video-selector', default='', help='CSS selector for the HTML video to record')
+    parser.add_argument('--video-timeout', type=float, default=14400, help='Maximum playback wait per video in seconds (default: 14400)')
+    parser.add_argument('--video-load-timeout', type=float, default=45, help='New video loading timeout in seconds (default: 45)')
+    fullscreen = parser.add_mutually_exclusive_group()
+    fullscreen.add_argument('--no-fullscreen', action='store_true')
+    fullscreen.add_argument('--fullscreen', dest='no_fullscreen', action='store_false',
+                            help='Enable fullscreen, overriding the configuration file')
     parser.add_argument('--start-hotkey', default='command+9')
     parser.add_argument('--stop-hotkey', default='command+9')
     parser.add_argument('--countdown', type=float, default=None)
     parser.add_argument('--save-wait', type=float, default=10)
     parser.add_argument('--stall-seconds', type=float, default=120)
-    args = parser.parse_args()
+    # Read only the config path first; the full parser still requires an explicit mode.
+    config_parser = argparse.ArgumentParser(add_help=False, allow_abbrev=False)
+    config_parser.add_argument('--config')
+    config_path = config_parser.parse_known_args(argv)[0].config
+    if config_path:
+        try:
+            settings = json.loads(Path(config_path).expanduser().read_text(encoding='utf-8'))
+        except (OSError, ValueError) as error:
+            parser.error(f'Cannot read config file {config_path}: {error}')
+        if not isinstance(settings, dict):
+            parser.error('Config must be a JSON object.')
+        types = {
+            'recorder': str, 'obs_port': int, 'max_videos': int,
+            'video_next_selector': str, 'video_selector': str,
+            'video_timeout': float, 'video_load_timeout': float,
+            'no_fullscreen': bool, 'start_hotkey': str, 'stop_hotkey': str,
+            'countdown': float, 'save_wait': float, 'stall_seconds': float,
+        }
+        for key, value in settings.items():
+            if key not in types:
+                parser.error(f'Unknown config option: {key}. Use keys from config.example.json.')
+            if key == 'countdown' and value is None:
+                continue
+            expected = types[key]
+            valid = (type(value) in (int, float) if expected is float else type(value) is expected)
+            if not valid or (expected is float and not math.isfinite(value)):
+                parser.error(f'Invalid config value for {key}: expected {expected.__name__}.')
+        if 'recorder' in settings and settings['recorder'] not in ('obs', 'easeus'):
+            parser.error('Config recorder must be "obs" or "easeus".')
+        parser.set_defaults(**settings)
+    args = parser.parse_args(argv)
     if args.countdown is None: args.countdown = 0 if args.recorder == 'obs' else 6
-    if sys.platform != 'darwin': parser.error('macOS에서만 실제 제어할 수 있습니다.')
+    if args.test and args.recorder != 'obs':
+        parser.error('--test requires OBS to verify the saved recording.')
     if (args.max_videos < 1 or not 1 <= args.obs_port <= 65535
             or not math.isfinite(args.countdown) or args.countdown < 0
             or any(not math.isfinite(x) or x <= 0 for x in
                    (args.save_wait, args.stall_seconds, args.video_timeout, args.video_load_timeout))):
-        parser.error('개수·대기시간은 양수이며 포트는 1~65535여야 합니다.')
+        parser.error('Counts and wait times must be positive, countdown must be nonnegative, and the port must be 1-65535.')
+    return args
+
+
+def main():
+    args = parse_args()
+    if sys.platform != 'darwin':
+        raise SystemExit('Live recording and browser control are supported only on macOS.')
     browser = recorder = awake = None
     try:
         if args.check_obs:
@@ -405,16 +559,18 @@ def main():
             return 0
         if args.test_recording:
             recorder = create_recorder(args)
-            say('10초 시험 녹화를 시작합니다. 재생 앱은 직접 조작하세요.')
+            say('Starting a 10-second test recording. Control the playback app manually.')
             try:
                 recorder.start()
                 time.sleep(10)
             finally:
                 path = recorder.stop()
-            if path: say('시험 녹화 파일 저장 확인: '+path)
+            if path: say('Test recording file verified: '+path)
             return 0
         browser = Chrome(args.video_next_selector, args.video_selector)
         bring_to_front(browser)
+        if not args.test:
+            apply_site_profile(browser, args)
         if args.check or args.diagnose:
             status = browser.call('diagnose' if args.diagnose else 'inspect')
             print(json.dumps(status, ensure_ascii=False, indent=2))
@@ -423,20 +579,23 @@ def main():
         wait_video(browser, timeout=args.video_load_timeout)
         recorder = create_recorder(args)
         awake = subprocess.Popen(['/usr/bin/caffeinate', '-di', '-w', str(__import__('os').getpid())])
+        if args.test:
+            test_site(browser, recorder, args)
+            return 0
         run_videos(browser, recorder, args)
-        say('실행 종료. 저장된 영상과 소리를 확인하세요.')
+        say('Finished. Check the saved video and audio.')
         return 0
     except KeyboardInterrupt:
-        say('사용자가 중단했습니다.')
+        say('Interrupted by the user.')
         return 130
     except Exception as error:
-        say('중단: '+str(error))
+        say('Stopped: '+str(error))
         return 1
     finally:
         if recorder:
             if recorder.active:
                 try: recorder.stop()
-                except Exception as error: say('녹화 종료 확인 실패. OBS에서 직접 확인하세요: '+str(error))
+                except Exception as error: say('Could not confirm recording stop. Check OBS directly: '+str(error))
             recorder.close()
         if awake: awake.terminate()
 

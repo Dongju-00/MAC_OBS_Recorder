@@ -42,7 +42,7 @@ class Browser:
         if action == 'pause': self.played = False
         if action == 'next':
             if self.save_path and not self.save_path.is_file():
-                raise AssertionError('저장된 파일 없이 이동하면 안 됨')
+                raise AssertionError('Navigation must not occur without a saved file')
             self.index += 1
             self.played = False
         return state(videoId=f'document:{self.index}:0', paused=not self.played,
@@ -67,7 +67,7 @@ class Recorder:
         if not self.active: return None
         self.events.append('stop')
         self.active = False
-        if self.fail_stop: raise RuntimeError('저장 파일 실패')
+        if self.fail_stop: raise RuntimeError('Failed to save file')
         if self.path:
             self.path.write_bytes(b'video')
             return str(self.path)
@@ -99,7 +99,7 @@ class ValidationTests(unittest.TestCase):
     def test_stall_and_media_replacement_abort(self):
         monitor = app.ProgressMonitor(state(), stall_seconds=10)
         monitor.update(state(time=5), 0)
-        with self.assertRaisesRegex(RuntimeError, '진행'): monitor.update(state(time=5), 11)
+        with self.assertRaisesRegex(RuntimeError, 'progress'): monitor.update(state(time=5), 11)
         with self.assertRaises(RuntimeError): monitor.update(state(videoId='replacement'), 1)
 
     def test_media_and_focus_errors_abort(self):
@@ -144,13 +144,13 @@ class FlowTests(unittest.TestCase):
         browser = Browser(self.events)
         original = browser.call
         browser.call = lambda action='inspect': dict(original(action), nextCount=2)
-        with self.assertRaisesRegex(RuntimeError, '버튼'):
+        with self.assertRaisesRegex(RuntimeError, 'button'):
             app.run_videos(browser, Recorder(self.events), options())
         self.assertIn('stop', self.events)
         self.assertNotIn('next', self.events)
 
     def test_failed_save_never_moves_to_next_video(self):
-        with self.assertRaisesRegex(RuntimeError, '저장'):
+        with self.assertRaisesRegex(RuntimeError, 'save'):
             app.run_videos(Browser(self.events), Recorder(self.events, fail_stop=True), options())
         self.assertNotIn('next', self.events)
 
@@ -200,7 +200,7 @@ class FlowTests(unittest.TestCase):
             browser.index += 1
             return result
         recorder.stop = stop
-        with self.assertRaisesRegex(RuntimeError, '영상.*바뀌'):
+        with self.assertRaisesRegex(RuntimeError, 'video.*changed'):
             app.run_videos(browser, recorder, options())
         self.assertNotIn('next', self.events)
 
@@ -234,7 +234,7 @@ class FlowTests(unittest.TestCase):
 
     def test_transition_timeout_does_not_accept_old_video(self):
         with patch('recorder.time.monotonic', side_effect=[0, 0, 4]):
-            with self.assertRaisesRegex(RuntimeError, '로딩|새 영상'):
+            with self.assertRaisesRegex(RuntimeError, 'loading|new video'):
                 app.wait_video(SimpleNamespace(call=lambda: state()), 'document:1:0', timeout=3)
 
 

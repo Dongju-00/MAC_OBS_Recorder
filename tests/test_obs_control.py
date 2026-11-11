@@ -133,7 +133,7 @@ class OBSControlTests(unittest.TestCase):
         with FakeOBS('/tmp/unused-obs-test.mkv',active=True) as server, \
              patch('recorder.sys.platform','darwin'), patch('recorder.sys.argv',['recorder.py','--check-obs']), \
              patch('builtins.print') as output, patch('recorder.say'), \
-             patch('recorder.Chrome',side_effect=AssertionError('OBS 점검에서 크롬 제어 금지')):
+             patch('recorder.Chrome',side_effect=AssertionError('OBS checks must not control Chrome')):
             self.assertEqual(app.main(),0)
             self.assertTrue(json.loads(output.call_args.args[0])['recording'])
         self.assertTrue(server.active)
@@ -195,8 +195,8 @@ class OBSControlTests(unittest.TestCase):
             output=Path(folder)/'test.mkv'
             with FakeOBS(output) as server, patch('recorder.sys.platform','darwin'), \
                  patch('recorder.sys.argv',['recorder.py','--test-recording']), patch('recorder.say'), \
-                 patch('recorder.time.sleep'), patch('recorder.apple',side_effect=AssertionError('OBS는 단축키를 보내면 안 됨')), \
-                 patch('recorder.Chrome',side_effect=AssertionError('시험에서 크롬 이동 금지')):
+                 patch('recorder.time.sleep'), patch('recorder.apple',side_effect=AssertionError('OBS control must not send hotkeys')), \
+                 patch('recorder.Chrome',side_effect=AssertionError('Scene-only recording tests must not navigate Chrome')):
                 self.assertEqual(app.main(),0)
             self.assertGreater(output.stat().st_size,0)
             self.assertEqual(server.requests.count('StartRecord'),1)
@@ -234,7 +234,7 @@ class OBSControlTests(unittest.TestCase):
         with FakeOBS('/tmp/unused-obs-test.mkv',active=True) as server:
             recorder = obs.OBSRecorder()
             try:
-                with self.assertRaisesRegex(RuntimeError,'이미 녹화'): recorder.start()
+                with self.assertRaisesRegex(RuntimeError,'already recording'): recorder.start()
                 recorder.stop()
             finally: recorder.close()
         self.assertNotIn('StartRecord',server.requests)
@@ -255,13 +255,13 @@ class OBSControlTests(unittest.TestCase):
             recorder=obs.OBSRecorder()
             try:
                 recorder.start()
-                with self.assertRaisesRegex(RuntimeError,'저장 파일'):
+                with self.assertRaisesRegex(RuntimeError,'saved recording file'):
                     recorder.stop()
                 self.assertFalse(recorder.active)
             finally: recorder.close()
 
     def test_wrong_password_fails_without_starting(self):
         with FakeOBS('/tmp/unused-obs-test.mkv',password='secret') as server:
-            with self.assertRaisesRegex(RuntimeError,'인증|4009'):
+            with self.assertRaisesRegex(RuntimeError,'authentication|4009'):
                 obs.OBSRecorder(password='wrong')
         self.assertEqual(server.requests,[])

@@ -25,6 +25,11 @@ function fixture({href='https://media.example/watch/1', labels=['Next video'], c
     return selector.split(',').some(s => {
       s=s.trim();
       if(s==='*') return true;
+      const attr=s.match(/^([a-z]+)\[([\w-]+)(~?=)("(?:[^"\\]|\\.)*")\]$/i);
+      if(attr) {
+        const value=el.attrs[attr[2]], expected=JSON.parse(attr[4]);
+        return el.tagName===attr[1].toUpperCase() && (attr[3]==='~=' ? (value||'').split(/\s+/).includes(expected) : value===expected);
+      }
       if(s==='video') return el.tagName==='VIDEO';
       if(s==='#player') return el.attrs.id==='player';
       if(s==='#advance') return el.attrs.id==='advance';
@@ -120,7 +125,7 @@ function fixture({href='https://media.example/watch/1', labels=['Next video'], c
 
   f=fixture();const first=f.call().videoId;
   f.context.location.href='https://media.example/watch/2';
-  assert.equal(f.call().videoId,first,'URL만 바뀌어도 이전 플레이어를 새 영상으로 인식하면 안 됨');
+  assert.equal(f.call().videoId,first,'A URL change alone must not identify the old player as new media');
   f.video.emit('loadstart');assert.equal(f.call().playerReady,false);
   f.video.emit('loadedmetadata');assert.notEqual(f.call().videoId,first);
   assert.equal(f.call().playerReady,true);
@@ -132,5 +137,32 @@ function fixture({href='https://media.example/watch/1', labels=['Next video'], c
   assert.match(f.call().playError,/Playback blocked/);
   f=fixture();const details=f.call('diagnose');assert.ok(details.nextCandidates);
   assert.deepEqual(f.calls,[]);
-  console.log('video 브라우저: 일반 URL, 재생, 버튼, iframe, shadow root, 미디어 교체, 오류 시나리오 통과');
+  for (const text of ['Next video (SHIFT+N)', '다음 동영상 (Shift+N)', 'Next lesson', '다음 강의']) {
+    f=fixture({labels:[text]});
+    assert.equal(f.call().nextCount,1, text);
+    const result=f.call('diagnose');
+    assert.equal(result.nextSelector,'button[id="advance"]');
+    f.call('next',result.nextSelector);
+    assert.equal(f.calls.at(-1),text);
+  }
+  f=fixture({labels:['', 'Next page']});
+  f.buttons[0].attrs.class='ytp-next-button ytp-button';
+  assert.equal(f.call().nextCount,1,'icon-only next control');
+  assert.equal(f.call('diagnose').nextSelector,'button[class~="ytp-next-button"]');
+  f=fixture({labels:['Next', 'Next video']});
+  assert.equal(f.call().nextCount,1,'prefer a video control over generic page navigation');
+  f.call('next');assert.equal(f.calls.at(-1),'Next video');
+  f=fixture({labels:['Previous video','Next chapter','Pay now']});
+  assert.equal(f.call().nextCount,0);
+  f=fixture({labels:['Next video','Next video']});
+  assert.equal(f.call('diagnose').nextSelector,null);
+  f=fixture({labels:['Next', 'Next video']});
+  f.buttons[1].disabled=true;
+  assert.equal(f.call().nextCount,0,'do not replace a disabled video-next button with generic page navigation');
+  f=fixture({href:'https://www.youtube.com/watch?v=example', labels:['다음']});
+  f.buttons[0].attrs.class='ytSpecButtonShapeNextHost';
+  assert.equal(f.call().nextCount,0,'YouTube page carousels are not next-video controls');
+  f.buttons[0].attrs.class='ytp-next-button ytp-button';
+  assert.equal(f.call().nextCount,1,'YouTube player next control is eligible');
+  console.log('Browser tests passed: URLs, playback, controls, frames, shadow roots, media replacement, and error handling');
 })().catch(error=>{console.error(error);process.exitCode=1;});

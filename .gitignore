@@ -10,6 +10,9 @@ venv/
 .DS_Store
 
 # Local configuration and recordings
+config.json
+.site-profiles.json
+.site-profiles.json.*
 .env
 .env.*
 !.env.example

@@ -1,0 +1,15 @@
+{
+  "recorder": "obs",
+  "obs_port": 4455,
+  "max_videos": 1,
+  "video_selector": "",
+  "video_next_selector": "",
+  "video_timeout": 14400,
+  "video_load_timeout": 45,
+  "no_fullscreen": false,
+  "countdown": null,
+  "save_wait": 10,
+  "stall_seconds": 120,
+  "start_hotkey": "command+9",
+  "stop_hotkey": "command+9"
+}

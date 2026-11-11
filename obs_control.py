@@ -1,4 +1,8 @@
-"""Local OBS WebSocket 5 recording control; Python standard library only."""
+"""Normal local OBS WebSocket 5 control for authorized screen recording.
+
+Capture restrictions remain in effect; this module does not alter DRM or
+browser/OS capture protections. Python standard library only.
+"""
 import base64
 import getpass
 import hashlib
@@ -40,7 +44,7 @@ class WebSocket:
                 f'Sec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode())
             header = bytearray()
             while not header.endswith(b'\r\n\r\n'):
-                if len(header) >= 16384: raise OBSConnectionError('OBS HTTP 응답이 너무 큽니다.')
+                if len(header) >= 16384: raise OBSConnectionError('The OBS HTTP response is too large.')
                 header.extend(self._exact(1))
             lines = header.decode('latin1').split('\r\n')
             fields = {name.lower():value.strip() for line in lines[1:] if ':' in line
@@ -48,7 +52,7 @@ class WebSocket:
             expected = base64.b64encode(hashlib.sha1((key+'258EAFA5-E914-47DA-95CA-C5AB0DC85B11').encode()).digest()).decode()
             if (len(lines[0].split()) < 2 or lines[0].split()[1] != '101' or
                     fields.get('sec-websocket-accept','') != expected):
-                raise OBSConnectionError('OBS WebSocket 연결 응답이 올바르지 않습니다.')
+                raise OBSConnectionError('Invalid OBS WebSocket handshake response.')
         except BaseException:
             self.close()
             raise
@@ -57,17 +61,17 @@ class WebSocket:
         data = bytearray()
         while len(data) < count:
             remaining = self.deadline-time.monotonic()
-            if remaining <= 0: raise OBSConnectionError('OBS 응답 대기시간을 넘겼습니다.')
+            if remaining <= 0: raise OBSConnectionError('Timed out waiting for an OBS response.')
             self.socket.settimeout(remaining)
             part = self.socket.recv(count-len(data))
-            if not part: raise OBSConnectionError('OBS 연결이 종료되었습니다.')
+            if not part: raise OBSConnectionError('The OBS connection was closed.')
             data.extend(part)
         return bytes(data)
 
     def _send(self, opcode, payload):
         mask = os.urandom(4)
         length = len(payload)
-        if length > self.LIMIT: raise OBSConnectionError('OBS 요청이 너무 큽니다.')
+        if length > self.LIMIT: raise OBSConnectionError('The OBS request is too large.')
         if length < 126: header = bytes([0x80|opcode,0x80|length])
         elif length < 65536: header = bytes([0x80|opcode,0x80|126])+struct.pack('!H',length)
         else: header = bytes([0x80|opcode,0x80|127])+struct.pack('!Q',length)
@@ -84,24 +88,24 @@ class WebSocket:
         while True:
             first, second = self._exact(2)
             opcode, final = first & 15, bool(first & 128)
-            if first & 112 or second & 128: raise OBSConnectionError('지원하지 않는 OBS 프레임입니다.')
+            if first & 112 or second & 128: raise OBSConnectionError('Unsupported OBS frame.')
             length = second & 127
             if length == 126: length = struct.unpack('!H',self._exact(2))[0]
             elif length == 127: length = struct.unpack('!Q',self._exact(8))[0]
             if length > self.LIMIT or len(message)+length > self.LIMIT:
-                raise OBSConnectionError('OBS 응답이 너무 큽니다.')
+                raise OBSConnectionError('The OBS response is too large.')
             if opcode >= 8 and (not final or length > 125):
-                raise OBSConnectionError('잘못된 OBS 제어 프레임입니다.')
+                raise OBSConnectionError('Invalid OBS control frame.')
             payload = self._exact(length)
             if opcode == 8:
                 code = struct.unpack('!H',payload[:2])[0] if len(payload) >= 2 else 1000
-                raise OBSConnectionError(f'OBS 연결 종료 (code={code}). 인증 비밀번호와 서버 설정을 확인하세요.')
+                raise OBSConnectionError(f'OBS connection closed (code={code}). Check the authentication password and server settings.')
             if opcode == 9:
                 self._send(10,payload)
                 continue
             if opcode == 10: continue
             if opcode == 1 and not started: started = True
-            elif opcode != 0 or not started: raise OBSConnectionError('OBS JSON 프레임을 확인할 수 없습니다.')
+            elif opcode != 0 or not started: raise OBSConnectionError('Cannot decode the OBS JSON frame.')
             message.extend(payload)
             if final: return json.loads(message.decode())
 
@@ -120,30 +124,30 @@ class OBSConnection:
         try:
             self.transport = WebSocket(port)
             hello = self.transport.receive()
-            if hello.get('op') != 0: raise OBSConnectionError('OBS 28 이상 / WebSocket 5 서버가 필요합니다.')
+            if hello.get('op') != 0: raise OBSConnectionError('OBS 28 or later with a WebSocket 5 server is required.')
             data = dict(rpcVersion=1,eventSubscriptions=0)
             auth = hello.get('d',{}).get('authentication')
             if auth:
                 if not self.password:
                     if not sys.stdin.isatty():
-                        raise OBSConnectionError('OBS_WEBSOCKET_PASSWORD 환경 변수에 OBS 서버 비밀번호를 설정하세요.')
-                    self.password = getpass.getpass('OBS WebSocket 비밀번호: ')
+                        raise OBSConnectionError('Set the OBS server password in the OBS_WEBSOCKET_PASSWORD environment variable.')
+                    self.password = getpass.getpass('OBS WebSocket password: ')
                 secret = base64.b64encode(hashlib.sha256((self.password+auth['salt']).encode()).digest()).decode()
                 data['authentication'] = base64.b64encode(hashlib.sha256((secret+auth['challenge']).encode()).digest()).decode()
             self.transport.send(dict(op=1,d=data))
-            if self.transport.receive().get('op') != 2: raise OBSConnectionError('OBS 인증에 실패했습니다.')
+            if self.transport.receive().get('op') != 2: raise OBSConnectionError('OBS authentication failed.')
         except BaseException as error:
             self.close()
             if isinstance(error,(KeyboardInterrupt,SystemExit,OBSConnectionError)):
                 raise
             if isinstance(error,OSError):
-                raise OBSConnectionError('OBS 연결 실패. OBS를 실행하고 도구 → WebSocket 서버 설정에서 '
-                                         f'서버를 활성화하세요 (127.0.0.1:{port}).') from error
-            raise OBSConnectionError('OBS 연결/인증 응답을 확인하지 못했습니다.') from error
+                raise OBSConnectionError('OBS connection failed. Open OBS and enable the server in Tools > WebSocket Server Settings '
+                                         f'(127.0.0.1:{port}).') from error
+            raise OBSConnectionError('Could not verify the OBS connection/authentication response.') from error
 
     def request(self, kind, data=None):
         if self.transport is None or self.transport.socket is None:
-            raise OBSConnectionError('OBS 연결을 다시 열어야 합니다.')
+            raise OBSConnectionError('The OBS connection must be reopened.')
         self.sequence += 1
         request_id = str(self.sequence)
         try:
@@ -155,7 +159,7 @@ class OBSConnection:
                 result = response['d']
                 status = result.get('requestStatus',{})
                 if not status.get('result'):
-                    raise OBSRequestError(f"OBS {kind} 실패 (code={status.get('code')}): {status.get('comment','')}")
+                    raise OBSRequestError(f"OBS {kind} failed (code={status.get('code')}): {status.get('comment','')}")
                 return result.get('responseData',{})
         except OBSRequestError:
             raise  # A complete negative response leaves the connection synchronized.
@@ -165,7 +169,7 @@ class OBSConnection:
             self.close()
             if isinstance(error,(KeyboardInterrupt,SystemExit,OBSConnectionError)):
                 raise
-            raise OBSConnectionError('OBS 통신/응답 형식 오류가 발생했습니다.') from error
+            raise OBSConnectionError('An OBS communication or response format error occurred.') from error
 
     def close(self):
         if self.transport is not None: self.transport.close()
@@ -197,18 +201,18 @@ class OBSRecorder:
         sources = self.connection.request('GetSceneItemList',dict(sceneName=scene)).get('sceneItems',[])
         enabled = [item for item in sources if item.get('sceneItemEnabled')]
         if not any(item.get('inputKind') != AUDIO_INPUT_KIND for item in enabled):
-            raise RuntimeError('OBS 현재 장면에 활성화된 캡처 소스가 없습니다. macOS 화면 캡처 소스를 추가하세요.')
+            raise RuntimeError('The current OBS scene has no enabled capture source. Add a macOS Screen Capture source.')
         if not any(self._is_blackhole(item['sourceName']) for item in enabled
                    if item.get('inputKind') == AUDIO_INPUT_KIND):
-            raise RuntimeError('OBS 현재 장면에 소리 소스가 없습니다. 소스 → + → macOS 오디오 입력 캡처를 추가하고 '
-                               f'장치를 {BLACKHOLE_NAME}로 선택하세요 (음소거 해제).')
+            raise RuntimeError('The current OBS scene has no required audio source. Add Sources > + > macOS Audio Input Capture and '
+                               f'select {BLACKHOLE_NAME} as the device (unmuted).')
         directory = self.connection.request('GetRecordDirectory').get('recordDirectory')
         return dict(scene=scene,recording=status.get('outputActive',False),recordDirectory=directory,
                     captureTarget=self._window_capture_target(enabled))
 
     def start(self):
         if self.connection.request('GetRecordStatus').get('outputActive'):
-            raise RuntimeError('OBS가 이미 녹화 중입니다. 기존 녹화를 직접 종료한 뒤 실행하세요.')
+            raise RuntimeError('OBS is already recording. Stop the existing recording manually before continuing.')
         self.last_output_path = None
         self.active = True  # An unacknowledged start still needs a cleanup attempt.
         try:
@@ -220,7 +224,7 @@ class OBSRecorder:
         while True:
             status = self.connection.request('GetRecordStatus')
             if status.get('outputActive') and not status.get('outputPaused'): return
-            if time.monotonic() > deadline: raise RuntimeError('OBS 녹화 시작 상태를 확인하지 못했습니다.')
+            if time.monotonic() > deadline: raise RuntimeError('Could not confirm that OBS started recording.')
             time.sleep(0.2)
 
     def stop(self):
@@ -234,16 +238,16 @@ class OBSRecorder:
             self.connection = OBSConnection(port,password)
             if not self.connection.request('GetRecordStatus').get('outputActive'):
                 self.active = False
-                raise RuntimeError('OBS 녹화는 종료됐지만 저장 경로 응답이 유실됐습니다. OBS 저장 폴더를 확인하세요.')
+                raise RuntimeError('OBS stopped recording, but its output path response was lost. Check the OBS recording directory.')
             result = self.connection.request('StopRecord')
         deadline = time.monotonic()+10
         while self.connection.request('GetRecordStatus').get('outputActive'):
-            if time.monotonic() > deadline: raise RuntimeError('OBS 녹화 종료를 확인하지 못했습니다.')
+            if time.monotonic() > deadline: raise RuntimeError('Could not confirm that OBS stopped recording.')
             time.sleep(0.2)
         self.active = False
         path = result.get('outputPath','')
         if not path or not Path(path).is_file() or Path(path).stat().st_size <= 0:
-            raise RuntimeError('OBS 저장 파일을 확인하지 못했습니다. 다음 영상으로 이동하지 않습니다.')
+            raise RuntimeError('Could not verify the saved recording file. Next-video navigation was stopped.')
         self.last_output_path = path
         return path
 
