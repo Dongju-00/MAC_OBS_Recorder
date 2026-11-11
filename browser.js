@@ -1,6 +1,5 @@
 function (action, nextSelector = '', playerSelector = '') {
-  // Ordinary DOM playback controls for authorized, non-DRM browser testing.
-  // No key extraction, DRM configuration changes, or capture-protection bypass.
+  // Controls playback and next-video navigation inside the selected Chrome tab.
   const visible = el => {
     const rect = el.getBoundingClientRect();
     const style = el.ownerDocument.defaultView.getComputedStyle(el);

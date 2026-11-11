@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
-"""General-purpose macOS / Chrome / OBS recording for authorized non-DRM content.
+"""Automatic macOS video recording with OBS and Chrome next-video navigation.
 
-Uses ordinary playback and capture controls. Does not change DRM/security
-settings, extract decryption keys, or bypass capture protections.
+Records each video to a separate file and advances after verifying the save.
 Python standard library only.
 """
 import argparse
@@ -478,7 +477,7 @@ def run_videos(browser, recorder, args):
 
 
 def parse_args(argv=None):
-    parser = argparse.ArgumentParser(description='macOS / Chrome / OBS recording for authorized, non-DRM content',
+    parser = argparse.ArgumentParser(description='Automatic video recording with OBS and Chrome next-video navigation',
                                      allow_abbrev=False)
     parser.add_argument('--config', metavar='PATH', help='Load recording defaults from a JSON file')
     mode = parser.add_mutually_exclusive_group(required=True)

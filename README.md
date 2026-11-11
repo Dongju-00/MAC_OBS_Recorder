@@ -6,13 +6,12 @@
 ![Python: Standard Library](https://img.shields.io/badge/Python-standard%20library-blue)
 ![OBS: WebSocket 5](https://img.shields.io/badge/OBS-WebSocket%205-302E31)
 
-A general-purpose OBS helper for recording your own content, content you have permission to record, and browser test sessions on ordinary non-DRM webpages. Run a site test once to discover its next-video control, verify recording and navigation, and save the settings. Then record from the current Chrome tab, one file at a time.
+An automatic video recorder for macOS using OBS Studio. It records the current Chrome video, saves each recording as a separate file, and automatically advances to the next video. Run a site test once to discover its next-video control and save the settings.
 
 [Getting Started](#installation) · [Recording Guides](#user-guides) · [Customization](#customization) · [FAQ](#faq)
 
 ## Table of Contents
 
-- [Intended Use and Limitations](#intended-use-and-limitations)
 - [Features](#features)
 - [Installation](#installation)
 - [OBS Setup](#obs-setup)
@@ -22,19 +21,9 @@ A general-purpose OBS helper for recording your own content, content you have pe
 - [Developer Guide](#developer-guide)
 - [Resources](#resources)
 
-## Intended Use and Limitations
-
-Use this tool only for content you own or have permission to record, such as your own videos, demonstrations, and browser automation tests on ordinary non-DRM webpages.
-
-- **No DRM circumvention:** This project does not extract decryption keys, modify Widevine or other DRM settings, inject protection-disabling flags, or disable browser/OS capture protections.
-- **Capture restrictions remain in effect:** Protected content may be blocked, omitted, or displayed as a black screen by the browser, operating system, or capture path. This tool does not detect all DRM or guarantee the capture behavior of any protected content. It provides no workaround for these restrictions.
-- **Respect rights and service terms:** Permission to watch content does not necessarily grant permission to record or redistribute it. Do not use this tool to bypass protections or make unauthorized copies. Follow applicable copyright law and the relevant service's terms.
-
-This notice is general project documentation, not legal advice or a guarantee that any particular use is lawful. Consult a qualified legal professional for advice about your situation.
-
 ## Features
 
-- Record permitted application windows or displays through your OBS scene, subject to capture restrictions.
+- Record an application window or display through your OBS scene.
 - Check the OBS connection, scene sources, BlackHole input, and recording directory.
 - Make a 10-second test recording without controlling Chrome.
 - Run `--test` to discover site navigation, record a short sample, and save a verified site profile.
@@ -309,10 +298,6 @@ Both shortcuts default to `command+9`. Supported modifiers are `command`, `contr
 
 Automation needs an accessible HTML `<video>` with a finite duration. Continuing also needs a same-tab next button or the tested YouTube shortcut. The script searches same-origin iframes and open shadow roots; cross-origin frames, closed shadow roots, live streams, and native app players may not be controllable. Automatic discovery does not guarantee support for every site. Use OBS manually for these cases.
 
-### Can this tool bypass DRM or fix a protected-content black screen?
-
-No. It uses normal OBS recording and browser playback controls and does not change content protection or browser security settings. Protected content may be excluded from capture or appear black. A successful file or playback check does not establish recording permission or prove that protected video was captured. See [Intended Use and Limitations](#intended-use-and-limitations).
-
 ### Why does the script stop instead of going to the next video?
 
 It stops on ambiguous buttons, playback errors, stalled playback, unexpected media changes, or failed save verification. Turn off automatic next-video playback and use `--diagnose` to inspect selectors. A URL change alone does not count as new media.
@@ -349,7 +334,7 @@ node tests/browser_tests.cjs
 
 Tests simulate OBS communication and browser structures. Actual capture, macOS permissions, and recorded audio need a test recording on your Mac. Application messages, CLI help, and password prompts are always in English, regardless of the README language. Site labels, scene names, file paths, and error details supplied by external software retain their original language.
 
-Keep contributions within ordinary screen recording and authorized non-DRM browser testing. Do not add DRM/key extraction, protection-disabling flags, or changes intended to circumvent browser/OS capture restrictions. Language-specific READMEs describe the same behavior; update all three when commands or defaults change.
+Language-specific READMEs describe the same behavior; update all three when commands or defaults change.
 
 ## Resources
 
@@ -357,4 +342,3 @@ Keep contributions within ordinary screen recording and authorized non-DRM brows
 - [OBS macOS Screen Capture Guide](https://obsproject.com/kb/macos-screen-capture-source)
 - [OBS macOS Desktop Audio Capture Guide](https://obsproject.com/kb/macos-desktop-audio-capture-guide)
 - [BlackHole](https://github.com/ExistentialAudio/BlackHole)
-- [Apple FairPlay screen-capture guidance](https://developer.apple.com/library/archive/qa/qa1970/) — an example of platform-enforced capture restrictions, not a guarantee about all DRM/browser combinations.

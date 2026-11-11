@@ -1,7 +1,6 @@
-"""Normal local OBS WebSocket 5 control for authorized screen recording.
+"""Local OBS WebSocket 5 recording control and saved-file verification.
 
-Capture restrictions remain in effect; this module does not alter DRM or
-browser/OS capture protections. Python standard library only.
+Python standard library only.
 """
 import base64
 import getpass
